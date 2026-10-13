@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: {{ copyright }}
+#
+# SPDX-License-Identifier: {{ spdx_license }}
+
+name: crates.io
+
+on:
+  push:
+    tags:
+      - "{{ rust_crate }}-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+{%- if checkout_submodules %}
+        with:
+          submodules: recursive
+{%- endif %}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish -p {{ rust_crate }}
+        env:
+          {% raw %}CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}{% endraw %}

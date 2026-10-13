@@ -1,0 +1,57 @@
+_subdirectory: template
+_min_copier_version: "9.4"
+_answers_file: .copier-answers.yml
+_skip_if_exists:
+  - docs/*.md
+
+project_name: { type: str, help: "PyPI/cargo project name" }
+spdx_license:
+  type: str
+  default: "EUPL-1.2"
+  help: "SPDX id"
+copyright:
+  type: str
+  default: "2026 László Vaskó <opensource@vlaci.email>"
+cachix_name: { type: str, default: "{{ project_name }}" }
+checkout_submodules: { type: bool, default: false }
+cargo_coverage: { type: bool, default: true }
+pytest_coverage: { type: bool, default: true }
+wheels: { type: bool, default: true }
+wheel_platforms:
+  type: str
+  multiselect: true
+  when: "{{ wheels }}"
+  choices:
+    [
+      linux-x86_64-gnu,
+      linux-aarch64-gnu,
+      linux-x86_64-musl,
+      linux-aarch64-musl,
+      windows-x64,
+      macos-x86_64,
+      macos-aarch64,
+    ]
+  default:
+    [
+      linux-x86_64-gnu,
+      linux-aarch64-gnu,
+      linux-x86_64-musl,
+      linux-aarch64-musl,
+      windows-x64,
+      macos-aarch64,
+    ]
+wheel_interpreters:
+  type: str
+  default: "3.14t 3.15 3.15t"
+  when: "{{ wheels }}"
+maturin_args:
+  { type: str, default: "--profile release-lto", when: "{{ wheels }}" }
+pgo: { type: bool, default: false, when: "{{ wheels }}" }
+docs_primary_color:
+  { type: str, default: "deep orange" }
+rust_crate:
+  {
+    type: str,
+    default: "{{ project_name }}",
+    help: "crate to publish to crates.io/docs.rs. empty = skip",
+  }

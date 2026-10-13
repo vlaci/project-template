@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "schedule:weekly"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "autoApprove": true,
+      "automerge": true
+    }
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "branchTopic": "lock-file-maintenance-{{packageFile}}",
+    "commitMessageExtra": "({{packageFile}})",
+    "extends": ["schedule:monthly"]
+  },
+  "github-actions": {
+    "managerFilePatterns": [
+      "/^template/\\.github/workflows/.+\\.ya?ml\\.jinja$/"
+    ]
+  }
+}

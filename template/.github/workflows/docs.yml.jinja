@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: {{ copyright }}
+#
+# SPDX-License-Identifier: {{ spdx_license }}
+
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+
+    paths:
+      - "docs/**"
+      - "python/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "zensical.toml"
+      - ".github/workflows/docs.yml"
+{%- if rust_crate %}
+      - "**/Cargo.toml"
+      - "**/CHANGELOG.md"
+      - "**/*.rs"
+{%- endif %}
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  {% raw %}group: ${{ github.workflow }}-${{ github.ref_name }}{% endraw %}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      {% raw %}url: ${{ steps.deployment.outputs.page_url }}{% endraw %}
+    steps:
+      - uses: actions/configure-pages@v6
+      - uses: actions/checkout@v7
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version-file: ".python-version"
+{%- if rust_crate %}
+      - name: Build Rust API docs
+        run: |
+          cargo doc -p {{ rust_crate }} --no-deps --target-dir target/site-doc
+          cp -r target/site-doc/doc/. docs/rust
+{%- endif %}
+      - run: |
+          uv sync --no-install-project --only-group docs
+          uv run --no-sync zensical build --clean
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - uses: actions/deploy-pages@v5
+        id: deployment

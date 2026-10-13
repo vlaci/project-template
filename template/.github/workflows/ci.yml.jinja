@@ -1,0 +1,213 @@
+# SPDX-FileCopyrightText: {{ copyright }}
+#
+# SPDX-License-Identifier: {{ spdx_license }}
+
+{% set runners = {
+  "x86_64-linux": "ubuntu-24.04",
+  "aarch64-linux": "ubuntu-24.04-arm",
+  "aarch64-darwin": "macos-26",
+} %}{% set platforms = {
+  "linux-x86_64-gnu": {"runner": "ubuntu-24.04", "target": "x86_64", "container": "quay.io/pypa/manylinux2014_x86_64:latest", "manylinux": "manylinux2014"},
+  "linux-aarch64-gnu": {"runner": "ubuntu-24.04-arm", "target": "aarch64", "container": "quay.io/pypa/manylinux2014_aarch64:latest", "manylinux": "manylinux2014"},
+  "linux-x86_64-musl": {"runner": "ubuntu-24.04", "target": "x86_64", "container": "quay.io/pypa/musllinux_1_2_x86_64:latest", "manylinux": "musllinux_1_2"},
+  "linux-aarch64-musl": {"runner": "ubuntu-24.04-arm", "target": "aarch64", "container": "quay.io/pypa/musllinux_1_2_aarch64:latest", "manylinux": "musllinux_1_2"},
+  "windows-x64": {"runner": "windows-latest", "target": "x64"},
+  "macos-x86_64": {"runner": "macos-26-intel", "target": "x86_64", "macosx": "10.12"},
+  "macos-aarch64": {"runner": "macos-26", "target": "aarch64", "macosx": "11.0"},
+} -%}
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  {% raw %}group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}{% endraw %}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64-linux
+            os: ubuntu-24.04
+          - arch: aarch64-linux
+            os: ubuntu-24.04-arm
+          - arch: aarch64-darwin
+            os: macos-26
+    {% raw %}name: Build Nix - ${{ matrix.arch }}.${{ matrix.os }}
+    runs-on: ${{ matrix.os }}{% endraw %}
+    steps:
+      - uses: actions/checkout@v7
+{%- if checkout_submodules %}
+        with:
+          submodules: recursive
+{%- endif %}
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
+        with:
+          name: {{ cachix_name }}
+          {% raw %}authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}{% endraw %}
+      - name: Pre-Commit
+        {% raw %}if: ${{ matrix.arch == 'x86_64-linux' }}{% endraw %}
+        run: nix fmt
+      - name: Nix Flake checks
+        run: |
+          {% raw %}nix flake check \
+              --keep-going \
+              --print-build-logs \
+              --option system ${{ matrix.arch }} \
+              --extra-platforms ${{ matrix.arch }}{% endraw %}
+{%- if cargo_coverage or pytest_coverage %}
+      - name: Code coverage
+        {% raw %}if: ${{ matrix.arch == 'x86_64-linux' }}{% endraw %}
+        run: |
+{%- if cargo_coverage %}
+          {% raw %}nix build .#checks.${{ matrix.arch }}.test-coverage -o cargo-test{% endraw %}
+{%- endif %}
+{%- if pytest_coverage %}
+          {% raw %}nix build .#checks.${{ matrix.arch }}.pytest-coverage -o pytest{% endraw %}
+{%- endif %}
+{%- endif %}
+{%- if cargo_coverage %}
+      - uses: codecov/codecov-action@v7
+        {% raw %}if: ${{ matrix.arch == 'x86_64-linux' }}{% endraw %}
+        with:
+          flags: cargo-test
+          files: cargo-test/coverage.codecov
+          {% raw %}token: ${{ secrets.CODECOV_TOKEN }}{% endraw %}
+{%- endif %}
+{%- if pytest_coverage %}
+      - uses: codecov/codecov-action@v7
+        {% raw %}if: ${{ matrix.arch == 'x86_64-linux' }}{% endraw %}
+        with:
+          flags: pytest
+          files: pytest/coverage.codecov
+          {% raw %}token: ${{ secrets.CODECOV_TOKEN }}{% endraw %}
+{%- endif %}
+{%- if wheels %}
+
+  wheels:
+    needs: [nix]
+    {% raw %}name: Wheels - ${{ matrix.platform.id }} py${{ matrix.interpreter }}
+    runs-on: ${{ matrix.platform.runner }}{% endraw %}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+{%- for p in wheel_platforms %}
+{%- set pl = platforms[p] %}
+          - id: {{ p }}
+            runner: {{ pl.runner }}
+            target: {{ pl.target }}
+{%- if pl.container %}
+            container: {{ pl.container }}
+            manylinux: {{ pl.manylinux }}
+{%- endif %}
+{%- if pl.macosx %}
+            macosx: "{{ pl.macosx }}"
+{%- endif %}
+{%- endfor %}
+        interpreter: [{{ wheel_interpreters.split() | map("tojson") | join(", ") }}]
+    steps:
+      - uses: actions/checkout@v7
+{%- if checkout_submodules %}
+        with:
+          submodules: recursive
+{%- endif %}
+      - name: Set macOS deployment target
+        {% raw %}if: matrix.platform.macosx
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=${{ matrix.platform.macosx }}" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@v7
+        id: python
+        if: ${{ !matrix.platform.container }}
+        with:
+          python-version: ${{ matrix.interpreter }}
+          allow-prereleases: true{% endraw %}
+      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          {% raw %}key: wheel-${{ matrix.platform.id }}-${{ matrix.interpreter }}{% endraw %}
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+{%- raw %}
+          target: ${{ matrix.platform.target }}
+          container: ${{ matrix.platform.container }}
+          manylinux: ${{ matrix.platform.manylinux }}
+{%- endraw %}
+          args: {{ maturin_args }}{% if pgo %} --pgo{% endif %} --out dist -i {% raw %}${{ matrix.platform.container && format('python{0}', matrix.interpreter) || steps.python.outputs.python-path }}{% endraw %}
+{%- if pgo %}
+          rustup-components: llvm-tools
+{%- endif %}
+          {% raw %}sccache: ${{ !startsWith(github.ref, 'refs/tags/') && !startsWith(matrix.platform.manylinux || '', 'musllinux') }}{% endraw %}
+      - uses: actions/upload-artifact@v7
+        with:
+          {% raw %}name: wheels-${{ matrix.platform.id }}-py${{ matrix.interpreter }}{% endraw %}
+          path: dist
+      - name: Test wheels (container)
+        {% raw %}if: matrix.platform.container
+        run: |
+          docker run --rm -v "$PWD":/io -w /io -e UV_PYTHON_DOWNLOADS=never ${{ matrix.platform.container }} sh -exc '
+            curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH=$HOME/.local/bin:$PATH
+            uv sync --no-install-project --no-default-groups --group test --python python${{ matrix.interpreter }}
+            uv pip install {% endraw %}{{ project_name }}{% raw %} --no-index --find-links dist
+            uv run --no-sync pytest'
+      - name: Test wheels
+        if: ${{ !matrix.platform.container }}
+        shell: bash
+        run: |
+          uv sync --no-install-project --no-default-groups --group test --python "${{ steps.python.outputs.python-path }}"
+          uv pip install {% endraw %}{{ project_name }}{% raw %} --no-index --find-links dist
+          uv run --no-sync pytest{% endraw %}
+{%- endif %}
+
+  sdist:
+    needs: [nix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+{%- if checkout_submodules %}
+        with:
+          submodules: recursive
+{%- endif %}
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          container: "off"
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [sdist{% if wheels %}, wheels{% endif %}]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "dist/*"
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv publish --trusted-publishing always --check-url https://pypi.org/simple/ dist/*
